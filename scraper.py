@@ -165,9 +165,7 @@ def replace_canteen_name(text):
     return text
 
 
-def crawl_campus_card(mode, headers):
-    output_file = 'campus_card_records.csv'
-    base_url = 'https://ycard.ahu.edu.cn/berserker-search/search/personal/turnover'
+def crawl_campus_card(mode, headers, output_file='campus_card_records.csv'):
     header_row = ['交易时间', '交易类型', '金额(元)', '余额(元)', '商户/地点', '详情描述', '流水号', '订单状态']
 
     existing_rows = []
@@ -191,7 +189,7 @@ def crawl_campus_card(mode, headers):
         print_log(f"正在爬取第 {current_page} 页...")
         params = {"size": 8, "current": current_page, "synAccessSource": "h5"}
         try:
-            resp = requests.get(base_url, headers=headers, params=params, timeout=10)
+            resp = requests.get('https://ycard.ahu.edu.cn/berserker-search/search/personal/turnover', headers=headers, params=params, timeout=10)
             data = resp.json()
             if data.get('success'):
                 records = data['data']['records']
@@ -232,11 +230,7 @@ def crawl_campus_card(mode, headers):
     print_log(f"任务结束。新增 {len(new_rows)} 条记录。")
 
 
-if __name__ == "__main__":
-    while True:
-        choice = input("1.全量爬取 2.增量爬取: ").strip()
-        if choice in ['1', '2']: break
-
+def run_scraper(mode, output_file='campus_card_records.csv'):
     final_headers = load_config()
     if final_headers:
         is_valid, msg = test_headers_validity(final_headers)
@@ -249,4 +243,12 @@ if __name__ == "__main__":
         print_log(">>> 未找到本地配置文件，准备启动浏览器捕获环境...")
         final_headers = auto_capture_and_validate()
 
-    crawl_campus_card(choice, final_headers)
+    crawl_campus_card(mode, final_headers, output_file)
+
+
+if __name__ == "__main__":
+    while True:
+        choice = input("1.全量爬取 2.增量爬取: ").strip()
+        if choice in ['1', '2']: break
+
+    run_scraper(choice)
