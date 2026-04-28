@@ -1,13 +1,87 @@
 import sys
-import os
+import json
+import glob
 import scraper
 import analyzer
 
-DATA_FILE = 'campus_card_records.csv'
+# 动态设置数据文件路径
+configs = glob.glob('config_*.json')
+if configs:
+    try:
+        with open(configs[0], 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            user_name = data.get('user_name', 'campus_card')
+        DATA_FILE = f"{user_name}_records.csv"
+    except Exception:
+        DATA_FILE = 'campus_card_records.csv'
+else:
+    DATA_FILE = 'campus_card_records.csv'
 
 
 def print_separator():
     print("=" * 50)
+
+
+def get_available_users():
+    configs = glob.glob('config_*.json')
+    users = []
+    for config in configs:
+        try:
+            with open(config, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                user_name = data.get('user_name')
+                if user_name:
+                    users.append(user_name)
+        except Exception:
+            pass
+    return users
+
+
+def select_user():
+    users = get_available_users()
+    if not users:
+        print("❌ 未找到用户配置，请先运行爬虫创建配置。")
+        return None
+    print("\n========= 选择用户 =========")
+    for i, u in enumerate(users):
+        print(f"  [{i+1}] {u}")
+    print(f"  [{len(users)+1}] 添加新用户")
+    print("============================")
+    while True:
+        choice = input("请输入用户序号: ").strip()
+        if choice.isdigit():
+            choice = int(choice)
+            if 1 <= choice <= len(users):
+                return users[choice - 1]
+            elif choice == len(users) + 1:
+                print("\n>>> 启动添加新用户...")
+                u_id, u_name, u_headers = scraper.capture_new_user()
+                if u_headers and u_name:
+                    print(f"✅ 新用户 {u_name} 添加成功！")
+                    return u_name
+                else:
+                    print("❌ 添加新用户失败，请重试。")
+            else:
+                print("❌ 无效输入，请重新选择。")
+        else:
+            print("❌ 无效输入，请重新选择。")
+
+
+def select_data_file():
+    files = glob.glob('*_records.csv')
+    if not files:
+        print("❌ 未找到数据文件。")
+        return None
+    print("\n========= 选择数据文件 =========")
+    for i, f in enumerate(files):
+        print(f"  [{i+1}] {f}")
+    print("=================================")
+    while True:
+        choice = input("请输入文件序号: ").strip()
+        if choice.isdigit() and 1 <= int(choice) <= len(files):
+            return files[int(choice) - 1]
+        else:
+            print("❌ 无效输入，请重新选择。")
 
 
 def main_menu():
@@ -22,20 +96,26 @@ def main_menu():
         print("  [0] 退出系统")
         print_separator()
 
-        choice = input("请输入选项数字并回车: ").strip()
+        choice = input("请输入选项数字并回车: ")
+
 
         if choice == '1':
-            print("\n>>> 启动增量爬取...")
-            scraper.run_scraper(mode='2', output_file=DATA_FILE)
+            user = select_user()
+            if user:
+                DATA_FILE = f"{user}_records.csv"
+                print(f"\n>>> 启动增量爬取 {user} 的数据...")
+                scraper.run_scraper(mode='2', output_file=DATA_FILE, user_name=user)
         elif choice == '2':
-            print("\n>>> 启动全量爬取...")
-            scraper.run_scraper(mode='1', output_file=DATA_FILE)
+            user = select_user()
+            if user:
+                DATA_FILE = f"{user}_records.csv"
+                print(f"\n>>> 启动全量爬取 {user} 的数据...")
+                scraper.run_scraper(mode='1', output_file=DATA_FILE, user_name=user)
         elif choice == '3':
-            print("\n>>> 启动数据分析...")
-            if not os.path.exists(DATA_FILE):
-                print(f"❌ 错误：未找到数据文件 {DATA_FILE}，请先执行爬取任务！")
-            else:
-                analyzer.run_analysis(DATA_FILE)
+            file_path = select_data_file()
+            if file_path:
+                print(f"\n>>> 启动数据分析 {file_path}...")
+                analyzer.run_analysis(file_path)
         elif choice == '0':
             print("\n感谢使用，再见！")
             sys.exit(0)
