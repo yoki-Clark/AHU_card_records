@@ -341,4 +341,4 @@ def run_analysis(file_path):
 
 
 if __name__ == "__main__":
-    run_analysis('姚恩祈_records.csv')
+    run_analysis()
