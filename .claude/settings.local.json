@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest tests/test_core.py tests/test_crypto.py -v)",
+      "Bash(python -m pytest tests/ -v)",
+      "Bash(python -c \"import visualizer; visualizer.run_visualization\\('姚恩祈_records.csv'\\)\")",
+      "Bash(python -c \"import analyzer; analyzer.run_analysis\\('姚恩祈_records.csv'\\)\")",
+      "Bash(python -c ' *)",
+      "Read(//c/Users/PC/.claude/projects/**)",
+      "Bash(mkdir -p ~/.claude/projects/E--python-repository-AHU-card-records/memory)",
+      "Bash(cp \"E:\\\\python_repository\\\\AHU_card_records\\\\memory\\\\user_profile.md\" ~/.claude/projects/E--python-repository-AHU-card-records/memory/)",
+      "Bash(cp \"E:\\\\python_repository\\\\AHU_card_records\\\\memory\\\\feedback_comprehensive.md\" ~/.claude/projects/E--python-repository-AHU-card-records/memory/)",
+      "Bash(cp \"E:\\\\python_repository\\\\AHU_card_records\\\\memory\\\\project_state_2026-05-03.md\" ~/.claude/projects/E--python-repository-AHU-card-records/memory/)",
+      "Bash(cp \"E:\\\\python_repository\\\\AHU_card_records\\\\memory\\\\MEMORY.md\" ~/.claude/projects/E--python-repository-AHU-card-records/memory/)",
+      "Bash(python run.py *)",
+      "Bash(python -c \"from app.analyzer import run_analysis; run_analysis\\('姚恩祈_records.csv'\\)\")",
+      "Bash(python -c \"from app import main, scraper, analyzer, visualizer, crypto_utils; print\\('All imports OK'\\)\")",
+      "Bash(python -c \"from app import main, scraper, analyzer, visualizer, crypto_utils, data_utils; print\\('All imports OK'\\)\")",
+      "Bash(python -c \"from app.visualizer import run_visualization; run_visualization\\('姚恩祈_records.csv'\\)\")",
+      "Bash(grep -rnE \"今天|昨天|刚刚|最近|上周|today|yesterday|recently\" README.md CLAUDE.md)",
+      "Bash(echo \"exit: $?\")"
+    ]
+  }
+}

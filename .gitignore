@@ -1,0 +1,14 @@
+# Sensitive — encryption keys
+.encryption_key
+.encryption_salt
+
+# Generated
+charts/
+__pycache__/
+.pytest_cache/
+
+# IDE
+.idea/
+
+# Checkpoint (transient)
+.crawl_checkpoint.json
