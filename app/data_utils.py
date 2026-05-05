@@ -26,6 +26,13 @@ CANTEEN_MAPPING = {
 
 EXPENSE_TYPES = ['消费', '二维码支付']
 
+WEEKDAY_NAMES = {0: '周一', 1: '周二', 2: '周三', 3: '周四', 4: '周五', 5: '周六', 6: '周日'}
+WEEKDAY_LABELS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
+
+IS_WEEKEND_COL = '是否周末'
+WEEKEND_LABEL = '周末'
+WORKDAY_LABEL = '工作日'
+
 COL = {
     'amount': '金额(元)',
     'balance': '余额(元)',
@@ -41,6 +48,18 @@ COL = {
 class CrawlMode(Enum):
     FULL = '1'
     INCREMENTAL = '2'
+
+
+__all__ = [
+    'CONFIG_DIR', 'CONFIG_PATTERN', 'CANTEEN_KEYWORDS', 'CANTEEN_MAPPING',
+    'EXPENSE_TYPES', 'WEEKDAY_NAMES', 'WEEKDAY_LABELS',
+    'IS_WEEKEND_COL', 'WEEKEND_LABEL', 'WORKDAY_LABEL',
+    'COL', 'CrawlMode',
+    'setup_logging', 'print_log',
+    'get_display_width', 'pad_with_fullwidth', 'print_aligned_table',
+    'load_and_prepare_expenses', 'compute_daily_stats',
+    'classify_canteen', 'extract_base_canteen', 'replace_canteen_name',
+]
 
 
 # ==================== Logging ====================
@@ -143,20 +162,28 @@ def load_and_prepare_expenses(file_path):
 
     expenses_df['日期'] = expenses_df[COL['time']].dt.date
     expenses_df['星期数值'] = expenses_df[COL['time']].dt.dayofweek
-    expenses_df['是否周末'] = expenses_df['星期数值'].apply(lambda x: '周末' if x >= 5 else '工作日')
+    expenses_df[IS_WEEKEND_COL] = expenses_df['星期数值'].apply(
+        lambda x: WEEKEND_LABEL if x >= 5 else WORKDAY_LABEL)
     expenses_df['年月'] = expenses_df[COL['time']].dt.to_period('M')
 
     return df, expenses_df
 
 
+def compute_daily_stats(expenses_df):
+    """Return daily aggregation: 单日总额, 单日笔数, 星期数值 per date."""
+    return expenses_df.groupby('日期').agg(
+        单日总额=(COL['amount'], 'sum'),
+        单日笔数=(COL['amount'], 'count'),
+        星期数值=('星期数值', 'first')
+    ).reset_index()
+
+
 def classify_canteen(name):
     """Classify a merchant name into a canteen category."""
-    if pd.isna(name):
-        return '其他'
-    for kw in CANTEEN_KEYWORDS:
-        if kw in str(name):
-            return f'{kw}食堂'
-    if '食堂' in str(name):
+    base = extract_base_canteen(name)
+    if base is not None:
+        return base
+    if not pd.isna(name) and '食堂' in str(name):
         return '其他食堂'
     return '其他'
 

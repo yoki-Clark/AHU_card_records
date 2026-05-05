@@ -4,7 +4,9 @@ import pandas as pd
 from datetime import datetime
 
 from app.data_utils import (COL, EXPENSE_TYPES, load_and_prepare_expenses,
-                            extract_base_canteen, print_aligned_table)
+                            extract_base_canteen, print_aligned_table,
+                            compute_daily_stats, WEEKDAY_NAMES,
+                            IS_WEEKEND_COL, WEEKEND_LABEL, WORKDAY_LABEL)
 
 __all__ = [
     'get_meal_period',
@@ -124,8 +126,7 @@ def _section_weekday(expenses_df, daily_stats):
 
     wd_group = wd_group.merge(top_locs, on='星期数值', how='left')
 
-    weekday_map = {0: '周一', 1: '周二', 2: '周三', 3: '周四', 4: '周五', 5: '周六', 6: '周日'}
-    wd_group['星期'] = wd_group['星期数值'].map(weekday_map)
+    wd_group['星期'] = wd_group['星期数值'].map(WEEKDAY_NAMES)
     wd_group['单笔均价'] = (wd_group['日均支出'] / wd_group['日均笔数']).round(2)
 
     wd_group = wd_group[['星期', '日均支出', '日均笔数', '单笔均价', '当日常客地点', '样本天数']]
@@ -162,8 +163,8 @@ def _section_daily_rhythm(expenses_df, canteen_df):
     print(f"   -> 金额: {latest_record[COL['amount']]}元, 地点: {latest_record[COL['merchant']]}")
 
     if not canteen_df.empty:
-        weekend_canteen = canteen_df[canteen_df['是否周末'] == '周末']
-        workday_canteen = canteen_df[canteen_df['是否周末'] == '工作日']
+        weekend_canteen = canteen_df[canteen_df[IS_WEEKEND_COL] == WEEKEND_LABEL]
+        workday_canteen = canteen_df[canteen_df[IS_WEEKEND_COL] == WORKDAY_LABEL]
         first_meal_wd = workday_canteen.groupby('日期')['逻辑相对分钟数'].min().mean()
         first_meal_we = weekend_canteen.groupby('日期')['逻辑相对分钟数'].min().mean()
         print(f"工作日首餐时间平均：{minutes_to_time_str(first_meal_wd)}")
@@ -178,12 +179,10 @@ def _section_finance(expenses_df, recharge_df, effective_days, total_expense):
         print("\n")
         return
 
-    recharge_df_copy = recharge_df.copy()
-    recharge_df_copy['充值前余额'] = recharge_df_copy[COL['balance']] - recharge_df_copy[COL['amount']]
-    avg_trigger_balance = recharge_df_copy['充值前余额'].mean()
+    avg_trigger_balance = (recharge_df[COL['balance']] - recharge_df[COL['amount']]).mean()
     print(f"财务习惯：平均在卡内余额剩余 {avg_trigger_balance:.2f} 元时触发充值。")
 
-    total_recharge_amt = recharge_df_copy[COL['amount']].sum()
+    total_recharge_amt = recharge_df[COL['amount']].sum()
     if total_recharge_amt > 0:
         days_per_100 = (100 / total_expense) * effective_days
         print(f"充值续航：在校期间，平均每 100 元可支撑 {days_per_100:.1f} 天。")
@@ -213,10 +212,9 @@ def _section_canteen(expenses_df, canteen_df):
         return
 
     print("================ 【食堂三餐综合统计表】 ================")
-    pivot_avg = pd.pivot_table(canteen_df, values=COL['amount'], index='主食堂名称',
-                               columns='餐段', aggfunc='mean').round(2)
-    pivot_count = pd.pivot_table(canteen_df, values=COL['amount'], index='主食堂名称',
-                                 columns='餐段', aggfunc='count', fill_value=0)
+    pivot = canteen_df.groupby(['主食堂名称', '餐段'])[COL['amount']].agg(['mean', 'count'])
+    pivot_avg = pivot['mean'].unstack().round(2)
+    pivot_count = pivot['count'].unstack(fill_value=0)
 
     for meal in ['早餐', '午餐', '晚餐']:
         if meal not in pivot_avg.columns:
@@ -224,8 +222,10 @@ def _section_canteen(expenses_df, canteen_df):
         if meal not in pivot_count.columns:
             pivot_count[meal] = 0
 
-    total_count = canteen_df.groupby('主食堂名称').size()
-    total_avg = canteen_df.groupby('主食堂名称')[COL['amount']].mean().round(2)
+    total_stats = canteen_df.groupby('主食堂名称')[COL['amount']].agg(
+        total_count='count', total_avg='mean')
+    total_count = total_stats['total_count']
+    total_avg = total_stats['total_avg'].round(2)
 
     canteen_summary = pd.DataFrame({
         '早均(元)': pivot_avg['早餐'],
@@ -260,12 +260,11 @@ def _section_canteen(expenses_df, canteen_df):
     elif top_ratio < 0.3:
         print("数据判断：就餐轨迹分散，倾向于在多个食堂间切换。")
 
-    # Canteen loyalty over time
     print("\n--- 【食堂忠诚度月度变化】 ---")
     monthly_canteen = canteen_df.groupby(['年月', '主食堂名称']).size().unstack(fill_value=0)
     if len(monthly_canteen) >= 2:
         monthly_share = monthly_canteen.div(monthly_canteen.sum(axis=1), axis=0)
-        top3 = canteen_df['主食堂名称'].value_counts().head(3).index.tolist()
+        top3 = total_count.sort_values(ascending=False).head(3).index.tolist()
         top3 = [c for c in top3 if c in monthly_share.columns]
         loyalty_table = monthly_share[top3].copy()
         loyalty_table.index = [str(idx) for idx in loyalty_table.index]
@@ -301,16 +300,13 @@ def run_analysis(file_path, gap_threshold=3.0, holiday_threshold=30.0):
         print("未找到有效的消费记录。\n")
         return
 
-    # --- Add computed columns to expenses_df ---
     expenses_df['年周'] = expenses_df[COL['time']].dt.to_period('W-SUN')
     expenses_df['逻辑相对分钟数'] = expenses_df[COL['time']].apply(get_logical_day_minutes)
     expenses_df['主食堂名称'] = expenses_df[COL['merchant']].apply(extract_base_canteen)
     expenses_df['餐段'] = expenses_df[COL['time']].apply(get_meal_period)
 
-    # --- Add gap column to full df for overview ---
     df['距上笔交易_天'] = df[COL['time']].diff().dt.total_seconds() / 86400
 
-    # --- Pre-compute shared DataFrames / stats ---
     gaps = df[df['距上笔交易_天'] > gap_threshold]
     holiday_gaps = df[df['距上笔交易_天'] > holiday_threshold]
     total_absolute_days = (df[COL['time']].max().date() - df[COL['time']].min().date()).days + 1
@@ -321,17 +317,11 @@ def run_analysis(file_path, gap_threshold=3.0, holiday_threshold=30.0):
     recharge_df = df[recharge_mask]
     total_expense = expenses_df[COL['amount']].sum()
 
-    # Daily stats — used by section 2 (weekday) and available for reuse
-    daily_stats = expenses_df.groupby('日期').agg(
-        单日总额=(COL['amount'], 'sum'),
-        单日笔数=(COL['amount'], 'count'),
-        星期数值=('星期数值', 'first')
-    ).reset_index()
+    daily_stats = compute_daily_stats(expenses_df)
 
-    # Canteen-only DataFrame — used by sections 4, 6, 7
     canteen_df = expenses_df.dropna(subset=['主食堂名称'])
 
-    # --- Produce report ---
+
     _section_overview(df, expenses_df, gaps, holiday_gaps,
                       effective_days, total_expense, recharge_df,
                       gap_threshold, holiday_threshold)
@@ -345,4 +335,8 @@ def run_analysis(file_path, gap_threshold=3.0, holiday_threshold=30.0):
 
 
 if __name__ == "__main__":
-    run_analysis()
+    import sys
+    if len(sys.argv) > 1:
+        run_analysis(sys.argv[1])
+    else:
+        print("用法: python -m app.analyzer <data_file.csv>")

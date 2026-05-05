@@ -89,7 +89,6 @@ def scan_local_users():
             data = crypto_utils.load_user_config(file_path)
             if 'user_id' in data and 'user_name' in data:
                 users.append({
-                    'file': file_path,
                     'user_id': data['user_id'],
                     'user_name': data['user_name'],
                     'headers': data.get('headers', {})
@@ -101,18 +100,16 @@ def scan_local_users():
 
 
 def save_user_config(user_id, user_name, headers):
-    if not os.path.exists(CONFIG_DIR):
-        os.makedirs(CONFIG_DIR)
+    os.makedirs(CONFIG_DIR, exist_ok=True)
     file_path = os.path.join(CONFIG_DIR, f"config_{user_id}.json")
     data = {
         "user_id": user_id,
         "user_name": user_name,
-        "headers": headers,
+        "headers": crypto_utils.encrypt_headers(headers),
         "update_time": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     }
     with open(file_path, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
-    crypto_utils.encrypt_config(file_path)
     return file_path
 
 
@@ -283,36 +280,32 @@ def capture_new_user():
 
 # ==================== Crawl Checkpoint ====================
 
-def _load_checkpoint(user_name):
-    """Load the checkpoint page for a specific user. Returns 1 if none found."""
+def _read_checkpoint_file():
+    """Return parsed checkpoint dict, or {} if missing/corrupt."""
     try:
         with open(CHECKPOINT_FILE, 'r', encoding='utf-8') as f:
             data = json.load(f)
-        # Support both old format {"user_name": ..., "last_page": ...} and new multi-user format
         if isinstance(data, dict):
-            if user_name in data:
-                return data[user_name]
-            # Legacy single-user format
-            if data.get('user_name') == user_name:
-                return data.get('last_page', 1)
+            # Migrate legacy single-user format
+            if 'user_name' in data and 'last_page' in data:
+                old_user = data.pop('user_name')
+                old_page = data.pop('last_page')
+                data[old_user] = old_page
+            return data
     except (FileNotFoundError, json.JSONDecodeError):
         pass
-    return 1
+    return {}
+
+
+def _load_checkpoint(user_name):
+    """Load the checkpoint page for a specific user. Returns 1 if none found."""
+    data = _read_checkpoint_file()
+    return data.get(user_name, 1)
 
 
 def _save_checkpoint(user_name, page_num):
     """Save checkpoint for a user. Supports multiple users in one file."""
-    data = {}
-    try:
-        with open(CHECKPOINT_FILE, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        pass
-    # If data is in old single-user format, migrate it
-    if 'user_name' in data and 'last_page' in data:
-        old_user = data.pop('user_name')
-        old_page = data.pop('last_page')
-        data[old_user] = old_page
+    data = _read_checkpoint_file()
     data[user_name] = page_num
     with open(CHECKPOINT_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f)
@@ -326,16 +319,7 @@ def _clear_checkpoint(user_name=None):
         except FileNotFoundError:
             pass
         return
-    try:
-        with open(CHECKPOINT_FILE, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return
-    # Support legacy format
-    if 'user_name' in data:
-        if data['user_name'] == user_name:
-            os.remove(CHECKPOINT_FILE)
-        return
+    data = _read_checkpoint_file()
     data.pop(user_name, None)
     if data:
         with open(CHECKPOINT_FILE, 'w', encoding='utf-8') as f:
@@ -388,17 +372,17 @@ def _process_record(item):
 
 
 def _get_latest_order_id(output_file):
-    """Read only the first data row from an existing CSV to get the latest order ID."""
+    """Read the first data row from an existing CSV to get the latest order ID."""
     try:
         with open(output_file, 'r', encoding='utf-8-sig') as f:
             reader = csv.reader(f)
-            next(reader, None)  # skip header
+            next(reader, None)
             first_row = next(reader, None)
             if first_row and len(first_row) >= 7 and first_row[6].strip():
-                return first_row[6].strip(), [first_row]
+                return first_row[6].strip()
     except (FileNotFoundError, StopIteration):
         pass
-    return None, []
+    return None
 
 
 def _write_csv(output_file, header_row, new_rows, append_file=None):
@@ -429,10 +413,9 @@ def crawl_campus_card(mode, headers, user_name, output_file=None):
     header_row = ['交易时间', '交易类型', '金额(元)', '余额(元)', '商户/地点', '详情描述', '流水号', '订单状态']
 
     latest_order_id = None
-    existing_first_row = []
 
     if mode == CrawlMode.INCREMENTAL and os.path.exists(output_file):
-        latest_order_id, existing_first_row = _get_latest_order_id(output_file)
+        latest_order_id = _get_latest_order_id(output_file)
 
     new_rows = []
     stop_crawling = False
@@ -444,18 +427,21 @@ def crawl_campus_card(mode, headers, user_name, output_file=None):
     else:
         current_page = 1
 
+    # Hoist the mode check outside the record loop
+    is_incremental_match = mode == CrawlMode.INCREMENTAL and latest_order_id
+
     while not stop_crawling:
         print_log(f"正在爬取第 {current_page} 页...")
         data, error = _fetch_page(current_page, headers)
 
         if error:
             print_log(error)
-            _save_checkpoint(user_name, current_page)
+            _save_checkpoint(user_name, current_page + 1)
             break
 
         if not data or not data.get('success'):
             print_log(f"终止爬取：响应异常 {data.get('msg') if data else '无响应'}")
-            _save_checkpoint(user_name, current_page)
+            _save_checkpoint(user_name, current_page + 1)
             break
 
         records = data.get('data', {}).get('records', [])
@@ -464,12 +450,15 @@ def crawl_campus_card(mode, headers, user_name, output_file=None):
             _clear_checkpoint(user_name)
             break
 
-        for item in records:
-            oid = str(item.get('orderId'))
-            if mode == CrawlMode.INCREMENTAL and latest_order_id and oid == latest_order_id:
-                stop_crawling = True
-                break
-            new_rows.append(_process_record(item))
+        if is_incremental_match:
+            for item in records:
+                if str(item.get('orderId')) == latest_order_id:
+                    stop_crawling = True
+                    break
+                new_rows.append(_process_record(item))
+        else:
+            for item in records:
+                new_rows.append(_process_record(item))
 
         if stop_crawling:
             _clear_checkpoint(user_name)
@@ -505,11 +494,10 @@ def _get_saved_browser():
 
 
 def _save_browser_config(path):
-    if not os.path.exists(CONFIG_DIR):
-        os.makedirs(CONFIG_DIR)
+    os.makedirs(CONFIG_DIR, exist_ok=True)
     config_file = os.path.join(CONFIG_DIR, 'browser_config.json')
     with open(config_file, 'w', encoding='utf-8') as f:
-        json.dump(data={'browser_path': path}, fp=f, indent=4)
+        json.dump({'browser_path': path}, f, indent=4)
 
 
 # ==================== Entry Points ====================
@@ -552,7 +540,10 @@ def run_manager():
                 break
             print_log(f"配置已失效 ({msg})，请选择登录新用户进行更新。")
 
-        elif choice == (len(local_users) + 1) if local_users else choice == 1:
+        else:
+            expected_new = len(local_users) + 1 if local_users else 1
+            if choice != expected_new:
+                continue
             u_id, u_name, u_headers = capture_new_user()
             if u_headers:
                 user_headers = u_headers
@@ -566,8 +557,6 @@ def run_manager():
 
 
 def run_scraper(mode, output_file, user_name):
-    if isinstance(mode, str):
-        mode = CrawlMode(mode)
     local_users = scan_local_users()
     selected = next((u for u in local_users if u['user_name'] == user_name), None)
     if not selected:

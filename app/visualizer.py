@@ -10,9 +10,9 @@ import matplotlib.font_manager as fm
 import numpy as np
 import pandas as pd
 
-from app.data_utils import load_and_prepare_expenses, classify_canteen, COL
+from app.data_utils import (load_and_prepare_expenses, classify_canteen, compute_daily_stats,
+                            COL, WEEKDAY_LABELS)
 
-# Try to load a CJK-capable font; fall back gracefully.
 _CJK_FONT_CANDIDATES = [
     'SimHei', 'Microsoft YaHei', 'WenQuanYi Micro Hei',
     'Noto Sans CJK SC', 'Noto Sans SC', 'Source Han Sans SC',
@@ -82,7 +82,7 @@ def _chart_monthly_trend(expenses_df):
 def _chart_canteen_pie(expenses_df):
     """Canteen spending distribution pie charts (amount + count)."""
     try:
-        canteen = expenses_df[expenses_df['消费类别'] != '其他'].copy()
+        canteen = expenses_df.loc[expenses_df['消费类别'] != '其他', [COL['amount'], '消费类别']]
         if canteen.empty:
             print("  [跳过] 无食堂数据，跳过饼图。")
             return
@@ -115,29 +115,24 @@ def _chart_canteen_pie(expenses_df):
 def _chart_weekday_comparison(expenses_df):
     """Weekday spending comparison bar charts."""
     try:
-        daily = expenses_df.groupby('日期').agg(
-            单日总额=(COL['amount'], 'sum'),
-            单日笔数=(COL['amount'], 'count'),
-            星期数值=('星期数值', 'first'),
-        ).reset_index()
+        daily = compute_daily_stats(expenses_df)
 
         wd_group = daily.groupby('星期数值').agg(
             日均支出=('单日总额', 'mean'),
             日均笔数=('单日笔数', 'mean')
         ).reindex(range(7))
 
-        weekday_labels = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
         colors = ['#2c7bb6' if i < 5 else '#d7191c' for i in range(7)]
 
         fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
-        axes[0].bar(weekday_labels, wd_group['日均支出'], color=colors)
+        axes[0].bar(WEEKDAY_LABELS, wd_group['日均支出'], color=colors)
         axes[0].set_title('星期日均消费金额', fontsize=13, fontweight='bold')
         axes[0].set_ylabel('日均消费 (元)')
         axes[0].axhline(y=wd_group['日均支出'].mean(), color='gray', linestyle='--', linewidth=1)
         axes[0].grid(axis='y', alpha=0.3)
 
-        axes[1].bar(weekday_labels, wd_group['日均笔数'], color=colors)
+        axes[1].bar(WEEKDAY_LABELS, wd_group['日均笔数'], color=colors)
         axes[1].set_title('星期日均消费笔数', fontsize=13, fontweight='bold')
         axes[1].set_ylabel('日均笔数')
         axes[1].axhline(y=wd_group['日均笔数'].mean(), color='gray', linestyle='--', linewidth=1)
@@ -161,13 +156,7 @@ def _chart_hourly_heatmap(expenses_df):
         ).reset_index()
 
         pivot = heatmap_data.pivot(index='星期数值', columns='小时', values='消费总额').fillna(0)
-        pivot = pivot.reindex(index=range(7), fill_value=0)
-        for h in range(24):
-            if h not in pivot.columns:
-                pivot[h] = 0
-        pivot = pivot[sorted(pivot.columns)]
-
-        weekday_labels = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
+        pivot = pivot.reindex(index=range(7), columns=range(24), fill_value=0)
 
         fig, ax = plt.subplots(figsize=(14, 4))
         im = ax.imshow(pivot.values, cmap='YlOrRd', aspect='auto')
@@ -175,7 +164,7 @@ def _chart_hourly_heatmap(expenses_df):
         ax.set_xticks(range(24))
         ax.set_xticklabels([f'{h}:00' for h in range(24)], rotation=45, fontsize=8)
         ax.set_yticks(range(7))
-        ax.set_yticklabels(weekday_labels, fontsize=10)
+        ax.set_yticklabels(WEEKDAY_LABELS, fontsize=10)
         ax.set_xlabel('小时')
         ax.set_title('消费时段热力图 (按星期 × 小时)', fontsize=14, fontweight='bold')
 
@@ -227,6 +216,10 @@ def run_visualization(file_path):
 
 
 if __name__ == "__main__":
+    import sys
     from app.data_utils import setup_logging
     setup_logging()
-    run_visualization()
+    if len(sys.argv) > 1:
+        run_visualization(sys.argv[1])
+    else:
+        print("用法: python -m app.visualizer <data_file.csv>")

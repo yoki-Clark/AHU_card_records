@@ -10,12 +10,13 @@ _SALT_FILE = '.encryption_salt'
 
 
 def _get_or_create_key():
-    if os.path.exists(_KEY_FILE) and os.path.exists(_SALT_FILE):
-        with open(_SALT_FILE, 'rb') as f:
-            salt = f.read()
-        with open(_KEY_FILE, 'rb') as f:
-            key = f.read()
+    try:
+        with open(_SALT_FILE, 'rb') as f_salt, open(_KEY_FILE, 'rb') as f_key:
+            salt = f_salt.read()
+            key = f_key.read()
         return Fernet(key)
+    except FileNotFoundError:
+        pass
 
     salt = os.urandom(16)
     kdf = PBKDF2HMAC(
@@ -39,11 +40,27 @@ def _get_or_create_key():
     return Fernet(key)
 
 
+def encrypt_headers(headers, sensitive_keys=('Cookie', 'synjones-auth')):
+    """Encrypt sensitive header values in memory. Returns new dict."""
+    if not isinstance(headers, dict):
+        return headers
+    fernet = _get_or_create_key()
+    result = dict(headers)
+    for key in list(result.keys()):
+        if key in sensitive_keys:
+            val = result[key]
+            if isinstance(val, str) and not val.startswith('ENC:'):
+                encrypted = fernet.encrypt(val.encode('utf-8'))
+                result[key] = 'ENC:' + base64.urlsafe_b64encode(encrypted).decode('ascii')
+    return result
+
+
 def encrypt_config(file_path, sensitive_keys=('headers', 'Cookie', 'synjones-auth')):
-    if not os.path.exists(file_path):
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except FileNotFoundError:
         return False
-    with open(file_path, 'r', encoding='utf-8') as f:
-        data = json.load(f)
     fernet = _get_or_create_key()
     modified = False
     headers = data.get('headers', {})
