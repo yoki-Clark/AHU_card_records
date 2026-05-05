@@ -21,6 +21,14 @@ TEST_URL = ('https://ycard.ahu.edu.cn/berserker-search/search/personal/turnover'
 
 CHECKPOINT_FILE = '.crawl_checkpoint.json'
 
+# ==================== Page Selectors (configurable) ====================
+# These selectors target elements on the SSO portal. If the portal UI changes,
+# update these constants rather than hunting through the code.
+SELECTOR_USER_NAME = '#user-btn-01 > span'
+SELECTOR_USER_EMAIL = '#email'
+SELECTOR_CARD_LINK = '#card_info > a:nth-child(2)'
+SELECTOR_CARD_LINK_FALLBACK = 'text=校园卡'
+
 # ==================== Browser Detection ====================
 
 BROWSER_PATHS = {
@@ -86,7 +94,8 @@ def scan_local_users():
                     'user_name': data['user_name'],
                     'headers': data.get('headers', {})
                 })
-        except Exception:
+        except Exception as e:
+            print_log(f"警告: 跳过损坏的配置文件 {file_path}: {e}")
             continue
     return users
 
@@ -139,11 +148,11 @@ def test_headers_validity(headers):
 
 def _extract_user_identity(page):
     print_log("等待获取用户信息节点 (最大等待时长 5 分钟)...")
-    page.wait_for_selector('#user-btn-01 > span', state='attached', timeout=300000)
+    page.wait_for_selector(SELECTOR_USER_NAME, state='attached', timeout=300000)
 
-    raw_name = page.locator('#user-btn-01 > span').text_content()
-    page.wait_for_selector('#email', state='attached', timeout=5000)
-    raw_email = page.locator('#email').text_content()
+    raw_name = page.locator(SELECTOR_USER_NAME).text_content()
+    page.wait_for_selector(SELECTOR_USER_EMAIL, state='attached', timeout=5000)
+    raw_email = page.locator(SELECTOR_USER_EMAIL).text_content()
 
     user_name = raw_name.strip() if raw_name else "未知用户"
     raw_email_str = raw_email.strip() if raw_email else "Unknown"
@@ -164,7 +173,8 @@ def _setup_auth_verify(context, page, on_capture):
         print_log(f"[{source}] 正在向服务器发送鉴权测试请求...")
         temp_h = {**BASE_HEADERS}
         temp_h["Cookie"] = cookie_str
-        temp_h["synjones-auth"] = auth_token if "bearer" in auth_token.lower() else f"bearer {auth_token}"
+        auth_lower = auth_token.lower()
+        temp_h["synjones-auth"] = auth_token if auth_lower.startswith("bearer ") else f"bearer {auth_token}"
         temp_h["User-Agent"] = ua
 
         is_valid, msg = test_headers_validity(temp_h)
@@ -242,8 +252,12 @@ def capture_new_user():
 
         try:
             print_log("尝试自动点击并跳转到校园卡页面...")
+            try:
+                card_link = page.locator(SELECTOR_CARD_LINK)
+            except Exception:
+                card_link = page.locator(SELECTOR_CARD_LINK_FALLBACK)
             with context.expect_page(timeout=10000) as new_page_info:
-                page.locator('#card_info > a:nth-child(2)').click(force=True)
+                card_link.click(force=True)
             card_page = new_page_info.value
             card_page.wait_for_load_state()
             print_log("已成功接管校园卡新标签页。为确保生成鉴权，将自动导向账单明细页...")
@@ -270,26 +284,67 @@ def capture_new_user():
 # ==================== Crawl Checkpoint ====================
 
 def _load_checkpoint(user_name):
+    """Load the checkpoint page for a specific user. Returns 1 if none found."""
     try:
         with open(CHECKPOINT_FILE, 'r', encoding='utf-8') as f:
             data = json.load(f)
-        if data.get('user_name') == user_name:
-            return data.get('last_page', 1)
+        # Support both old format {"user_name": ..., "last_page": ...} and new multi-user format
+        if isinstance(data, dict):
+            if user_name in data:
+                return data[user_name]
+            # Legacy single-user format
+            if data.get('user_name') == user_name:
+                return data.get('last_page', 1)
     except (FileNotFoundError, json.JSONDecodeError):
         pass
     return 1
 
 
 def _save_checkpoint(user_name, page_num):
-    with open(CHECKPOINT_FILE, 'w', encoding='utf-8') as f:
-        json.dump({'user_name': user_name, 'last_page': page_num}, f)
-
-
-def _clear_checkpoint():
+    """Save checkpoint for a user. Supports multiple users in one file."""
+    data = {}
     try:
-        os.remove(CHECKPOINT_FILE)
-    except FileNotFoundError:
+        with open(CHECKPOINT_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
         pass
+    # If data is in old single-user format, migrate it
+    if 'user_name' in data and 'last_page' in data:
+        old_user = data.pop('user_name')
+        old_page = data.pop('last_page')
+        data[old_user] = old_page
+    data[user_name] = page_num
+    with open(CHECKPOINT_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f)
+
+
+def _clear_checkpoint(user_name=None):
+    """Clear checkpoint. If user_name is given, remove only that user's entry."""
+    if user_name is None:
+        try:
+            os.remove(CHECKPOINT_FILE)
+        except FileNotFoundError:
+            pass
+        return
+    try:
+        with open(CHECKPOINT_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return
+    # Support legacy format
+    if 'user_name' in data:
+        if data['user_name'] == user_name:
+            os.remove(CHECKPOINT_FILE)
+        return
+    data.pop(user_name, None)
+    if data:
+        with open(CHECKPOINT_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f)
+    else:
+        try:
+            os.remove(CHECKPOINT_FILE)
+        except FileNotFoundError:
+            pass
 
 
 # ==================== Core Crawling Logic ====================
@@ -311,8 +366,9 @@ def _fetch_page(page_num, headers):
         except Exception as e:
             last_error = str(e)
             if retry < MAX_RETRIES - 1:
-                print_log(f"第 {page_num} 页请求失败 ({e})，正在重试 {retry + 1}/{MAX_RETRIES}...")
-                time.sleep(2)
+                wait_s = min(2 ** retry, 8)  # exponential backoff capped at 8s
+                print_log(f"第 {page_num} 页请求失败 ({e})，正在重试 {retry + 1}/{MAX_RETRIES} (等待 {wait_s}s)...")
+                time.sleep(wait_s)
 
     return None, f"连续重试失败: {last_error}"
 
@@ -348,17 +404,23 @@ def _get_latest_order_id(output_file):
 def _write_csv(output_file, header_row, new_rows, append_file=None):
     """Write new rows to CSV. If append_file is given, stream its content after new rows."""
     temp_file = output_file + '.temp'
-    with open(temp_file, 'w', newline='', encoding='utf-8-sig') as f:
-        writer = csv.writer(f)
-        writer.writerow(header_row)
-        writer.writerows(new_rows)
-        # Stream existing rows without loading all into memory
-        if append_file:
-            with open(append_file, 'r', encoding='utf-8-sig') as src:
-                src.readline()  # skip header
-                for line in src:
-                    f.write(line)
-    os.replace(temp_file, output_file)
+    try:
+        with open(temp_file, 'w', newline='', encoding='utf-8-sig') as f:
+            writer = csv.writer(f)
+            writer.writerow(header_row)
+            writer.writerows(new_rows)
+            # Stream existing rows without loading all into memory
+            if append_file and os.path.exists(append_file):
+                with open(append_file, 'r', encoding='utf-8-sig') as src:
+                    src.readline()  # skip header
+                    for line in src:
+                        f.write(line)
+        os.replace(temp_file, output_file)
+    finally:
+        try:
+            os.remove(temp_file)
+        except FileNotFoundError:
+            pass
 
 
 def crawl_campus_card(mode, headers, user_name, output_file=None):
@@ -399,7 +461,7 @@ def crawl_campus_card(mode, headers, user_name, output_file=None):
         records = data.get('data', {}).get('records', [])
         if not records:
             print_log(f"第 {current_page} 页无数据，爬取自然结束。")
-            _clear_checkpoint()
+            _clear_checkpoint(user_name)
             break
 
         for item in records:
@@ -410,7 +472,7 @@ def crawl_campus_card(mode, headers, user_name, output_file=None):
             new_rows.append(_process_record(item))
 
         if stop_crawling:
-            _clear_checkpoint()
+            _clear_checkpoint(user_name)
             break
 
         if current_page % 10 == 0:

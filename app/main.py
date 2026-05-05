@@ -18,29 +18,33 @@ def get_available_users():
 
 def select_user():
     users = get_available_users()
-    if not users:
-        print("❌ 未找到用户配置，请先运行爬虫创建配置。")
-        return None
+
     print("\n========= 选择用户 =========")
-    for i, u in enumerate(users):
-        print(f"  [{i+1}] {u}")
-    print(f"  [{len(users)+1}] 添加新用户")
+    if users:
+        for i, u in enumerate(users):
+            print(f"  [{i+1}] {u}")
+        print(f"  [{len(users)+1}] 添加新用户")
+    else:
+        print("  (暂无已配置用户)")
+        print(f"  [1] 添加新用户")
     print("============================")
+
     while True:
         choice = input("请输入用户序号: ").strip()
         if choice.isdigit():
             choice = int(choice)
-            if 1 <= choice <= len(users):
+            if users and 1 <= choice <= len(users):
                 return users[choice - 1]
-            if choice == len(users) + 1:
+            add_new = (choice == len(users) + 1) if users else (choice == 1)
+            if add_new:
                 print("\n>>> 启动添加新用户...")
                 u_id, u_name, u_headers = scraper.capture_new_user()
                 if u_headers and u_name:
                     print(f"✅ 新用户 {u_name} 添加成功！")
                     return u_name
                 print("❌ 添加新用户失败，请重试。")
-            else:
-                print("❌ 无效输入，请重新选择。")
+                return None
+            print("❌ 无效输入，请重新选择。")
         else:
             print("❌ 无效输入，请重新选择。")
 
@@ -104,6 +108,8 @@ def main_menu():
 
 
 if __name__ == "__main__":
+    from app.data_utils import setup_logging
+    setup_logging()
     try:
         main_menu()
     except KeyboardInterrupt:

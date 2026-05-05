@@ -18,7 +18,8 @@
       "Bash(python -c \"from app import main, scraper, analyzer, visualizer, crypto_utils, data_utils; print\\('All imports OK'\\)\")",
       "Bash(python -c \"from app.visualizer import run_visualization; run_visualization\\('姚恩祈_records.csv'\\)\")",
       "Bash(grep -rnE \"今天|昨天|刚刚|最近|上周|today|yesterday|recently\" README.md CLAUDE.md)",
-      "Bash(echo \"exit: $?\")"
+      "Bash(echo \"exit: $?\")",
+      "Bash(python -m pytest tests/ -q)"
     ]
   }
 }

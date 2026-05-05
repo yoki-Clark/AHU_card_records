@@ -12,3 +12,7 @@ __pycache__/
 
 # Checkpoint (transient)
 .crawl_checkpoint.json
+
+# User configs (encrypted, but sensitive)
+config/config_*.json
+!config/browser_config.json

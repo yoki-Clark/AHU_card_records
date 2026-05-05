@@ -1,7 +1,9 @@
 """Shared data loading, constants, and formatting utilities."""
+import logging
 import os
 import re
 import unicodedata
+from datetime import datetime
 from enum import Enum
 
 import pandas as pd
@@ -41,7 +43,38 @@ class CrawlMode(Enum):
     INCREMENTAL = '2'
 
 
+# ==================== Logging ====================
+
+def setup_logging(level=logging.INFO):
+    """Configure root logger with a console handler."""
+    logger = logging.getLogger()
+    logger.setLevel(level)
+    if not logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter(
+            '[%(asctime)s] %(message)s', datefmt='%H:%M:%S'
+        ))
+        logger.addHandler(handler)
+
+
+def print_log(msg):
+    """Convenience wrapper — logs at INFO level. Kept for backward compatibility."""
+    logging.info(msg)
+
+
 # ==================== Terminal Formatting ====================
+
+# Pre-compute fullwidth space strings for common padding lengths.
+# Each chr(12288) counts as 2 display-width columns.
+_FULLWIDTH_SPACES = {n: chr(12288) * n for n in range(0, 21)}
+
+
+def _fullwidth_pad_str(count):
+    """Return a string of `count` fullwidth spaces, using the cache for common lengths."""
+    if count in _FULLWIDTH_SPACES:
+        return _FULLWIDTH_SPACES[count]
+    return chr(12288) * count
+
 
 def get_display_width(s):
     s = str(s)
@@ -60,7 +93,7 @@ def pad_with_fullwidth(s, max_len):
     padding_needed = max_len - current_len
     full_spaces = padding_needed // 2
     half_spaces = padding_needed % 2
-    return s + chr(12288) * full_spaces + ' ' * half_spaces
+    return s + _fullwidth_pad_str(full_spaces) + ' ' * half_spaces
 
 
 def print_aligned_table(df):
@@ -85,10 +118,9 @@ def print_aligned_table(df):
 
 # ==================== Data Loading ====================
 
-def load_and_prepare_expenses(file_path, extra_columns=None):
+def load_and_prepare_expenses(file_path):
     """Load CSV, clean types, filter expenses, return (full_df, expenses_df).
 
-    extra_columns: optional list of column names to compute on expenses_df.
     Returns the raw full df and the filtered expense-only df.
     Callers can add their own module-specific columns afterward.
     """
@@ -149,10 +181,3 @@ def replace_canteen_name(text):
         if old_name in text:
             text = text.replace(old_name, new_name)
     return text
-
-
-# ==================== Logging ====================
-
-def print_log(msg):
-    from datetime import datetime
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")

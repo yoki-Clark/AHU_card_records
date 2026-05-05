@@ -1,18 +1,20 @@
+"""Campus card expense analysis — 7-section textual report."""
 import numpy as np
 import pandas as pd
 from datetime import datetime
 
 from app.data_utils import (COL, EXPENSE_TYPES, load_and_prepare_expenses,
-                            extract_base_canteen, print_aligned_table,
-                            get_display_width, pad_with_fullwidth)
+                            extract_base_canteen, print_aligned_table)
 
-# Re-export for backward compatibility (tests)
 __all__ = [
-    'get_display_width', 'pad_with_fullwidth', 'print_aligned_table',
-    'extract_base_canteen', 'get_meal_period', 'get_logical_day_minutes',
-    'minutes_to_time_str', 'analyze_normalized_trend', 'run_analysis'
+    'get_meal_period',
+    'get_logical_day_minutes',
+    'minutes_to_time_str',
+    'analyze_normalized_trend',
+    'run_analysis',
 ]
 
+# ==================== Helpers ====================
 
 def get_meal_period(dt):
     hour = dt.hour
@@ -36,6 +38,8 @@ def minutes_to_time_str(logical_minutes):
     total_mins = (int(logical_minutes) + 4 * 60) % (24 * 60)
     return f"{total_mins // 60:02d}:{total_mins % 60:02d}"
 
+
+# ==================== Trend Analysis (shared helper) ====================
 
 def analyze_normalized_trend(df, time_col, period_name, n=4):
     grouped = df.groupby(time_col).agg(
@@ -70,38 +74,17 @@ def analyze_normalized_trend(df, time_col, period_name, n=4):
         print(f"历史完整期平均支出：{avg_completed:.2f} 元/天")
 
 
-def run_analysis(file_path, gap_threshold=3.0, holiday_threshold=30.0):
-    print("正在加载数据并执行综合分析...\n")
+# ==================== Section Methods ====================
 
-    df, expenses_df = load_and_prepare_expenses(file_path)
-
-    if expenses_df.empty:
-        print("未找到有效的消费记录。\n")
-        return
-
-    expenses_df['年周'] = expenses_df[COL['time']].dt.to_period('W-SUN')
-    expenses_df['逻辑相对分钟数'] = expenses_df[COL['time']].apply(get_logical_day_minutes)
-    expenses_df['主食堂名称'] = expenses_df[COL['merchant']].apply(extract_base_canteen)
-    expenses_df['餐段'] = expenses_df[COL['time']].apply(get_meal_period)
-
-    # ================= 0. 离校期断点检测与全局概览 =================
-    df['距上笔交易_天'] = df[COL['time']].diff().dt.total_seconds() / 86400
-    gaps = df[df['距上笔交易_天'] > gap_threshold]
-    holiday_gaps = df[df['距上笔交易_天'] > holiday_threshold]
-
-    total_absolute_days = (df[COL['time']].max().date() - df[COL['time']].min().date()).days + 1
+def _section_overview(df, expenses_df, gaps, holiday_gaps,
+                      effective_days, total_expense, recharge_df, gap_threshold, holiday_threshold):
     total_absence_days = gaps['距上笔交易_天'].sum() if not gaps.empty else 0
     total_holiday_days = holiday_gaps['距上笔交易_天'].sum() if not holiday_gaps.empty else 0
-    effective_days = max(total_absolute_days - total_absence_days, 1)
-
-    recharge_mask = df[COL['type']] == '充值'
-    recharge_df = df[recharge_mask]
     avg_recharge_per_txn = recharge_df[COL['amount']].mean() if not recharge_df.empty else 0
-    total_expense = expenses_df[COL['amount']].sum()
     avg_expense_per_txn = expenses_df[COL['amount']].mean()
 
     print("================ 【全局概览与数据有效性】 ================")
-    print(f"日历绝对时间跨度：{total_absolute_days} 天")
+    print(f"日历绝对时间跨度：{(df[COL['time']].max().date() - df[COL['time']].min().date()).days + 1} 天")
     print(f"短时离校 (>{gap_threshold}天且≤{holiday_threshold}天)：约 {total_absence_days - total_holiday_days:.1f} 天")
     print(f"长假/假期 (>{holiday_threshold}天)：约 {total_holiday_days:.1f} 天")
     if not holiday_gaps.empty:
@@ -116,21 +99,17 @@ def run_analysis(file_path, gap_threshold=3.0, holiday_threshold=30.0):
     print(f"单笔平均充值：{avg_recharge_per_txn:.2f} 元/笔")
     print("\n")
 
-    # ================= 1. 动态周期分析 =================
+
+def _section_trend(expenses_df):
     print("================ 【动态消费趋势分析】 ================")
     analyze_normalized_trend(expenses_df, '年月', '月度', n=4)
     print("")
     analyze_normalized_trend(expenses_df, '年周', '周度', n=5)
     print("\n")
 
-    # ================= 2. 周一至周日分布 =================
-    print("================ 【一周时间线（周一至周日）规律分布】 ================")
 
-    daily_stats = expenses_df.groupby('日期').agg(
-        单日总额=(COL['amount'], 'sum'),
-        单日笔数=(COL['amount'], 'count'),
-        星期数值=('星期数值', 'first')
-    ).reset_index()
+def _section_weekday(expenses_df, daily_stats):
+    print("================ 【一周时间线（周一至周日）规律分布】 ================")
 
     wd_group = daily_stats.groupby('星期数值').agg(
         日均支出=('单日总额', 'mean'),
@@ -157,17 +136,20 @@ def run_analysis(file_path, gap_threshold=3.0, holiday_threshold=30.0):
     print_aligned_table(wd_group.set_index('星期'))
     print("\n")
 
-    # ================= 3. 极值分析 =================
+
+def _section_extremes(expenses_df, recharge_df):
     max_expense = expenses_df.loc[expenses_df[COL['amount']].idxmax()]
     print("================ 【金额极值】 ================")
-    print(f"最高单笔消费：{max_expense[COL['amount']]} 元 ({max_expense[COL['time']]} @ {max_expense[COL['merchant']]})")
+    print(f"最高单笔消费：{max_expense[COL['amount']]} 元 "
+          f"({max_expense[COL['time']]} @ {max_expense[COL['merchant']]})")
 
     if not recharge_df.empty:
         max_recharge = recharge_df.loc[recharge_df[COL['amount']].idxmax()]
         print(f"最高单笔充值：{max_recharge[COL['amount']]} 元 ({max_recharge[COL['time']]})")
     print("\n")
 
-    # ================= 4. 作息与消费时间 =================
+
+def _section_daily_rhythm(expenses_df, canteen_df):
     earliest_idx = expenses_df['逻辑相对分钟数'].idxmin()
     latest_idx = expenses_df['逻辑相对分钟数'].idxmax()
     earliest_record = expenses_df.loc[earliest_idx]
@@ -179,7 +161,6 @@ def run_analysis(file_path, gap_threshold=3.0, holiday_threshold=30.0):
     print(f"一天中最晚的消费 (熬夜极限)：{latest_record[COL['time']].strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"   -> 金额: {latest_record[COL['amount']]}元, 地点: {latest_record[COL['merchant']]}")
 
-    canteen_df = expenses_df.dropna(subset=['主食堂名称'])
     if not canteen_df.empty:
         weekend_canteen = canteen_df[canteen_df['是否周末'] == '周末']
         workday_canteen = canteen_df[canteen_df['是否周末'] == '工作日']
@@ -189,107 +170,112 @@ def run_analysis(file_path, gap_threshold=3.0, holiday_threshold=30.0):
         print(f"周末首餐时间平均：{minutes_to_time_str(first_meal_we)}")
     print("\n")
 
-    # ================= 5. 财务习惯与预算预测 =================
+
+def _section_finance(expenses_df, recharge_df, effective_days, total_expense):
     print("================ 【财务习惯与资金续航】 ================")
-    if len(recharge_df) > 1:
-        recharge_df_copy = recharge_df.copy()
-        recharge_df_copy['充值前余额'] = recharge_df_copy[COL['balance']] - recharge_df_copy[COL['amount']]
-        avg_trigger_balance = recharge_df_copy['充值前余额'].mean()
-        print(f"财务习惯：平均在卡内余额剩余 {avg_trigger_balance:.2f} 元时触发充值。")
-
-        total_recharge_amt = recharge_df_copy[COL['amount']].sum()
-        if total_recharge_amt > 0:
-            days_per_100 = (100 / total_expense) * effective_days
-            print(f"充值续航：在校期间，平均每 100 元可支撑 {days_per_100:.1f} 天。")
-
-        daily_avg = total_expense / effective_days
-        today = datetime.now()
-        days_in_month = pd.Period(today.strftime('%Y-%m')).days_in_month
-        days_left = days_in_month - today.day
-        predicted = daily_avg * days_left
-        print(f"\n--- 【预算预测】 ---")
-        print(f"参考日均消费：{daily_avg:.2f} 元/天")
-        print(f"本月剩余天数：{days_left} 天")
-        print(f"预估本月还需：{predicted:.2f} 元")
-        if '年周' in expenses_df.columns:
-            recent_4w = expenses_df[expenses_df['年周'].isin(expenses_df['年周'].unique()[-4:])]
-            if not recent_4w.empty:
-                recent_days = recent_4w['日期'].nunique()
-                recent_avg = recent_4w[COL['amount']].sum() / max(recent_days, 1)
-                print(f"近4周日均消费：{recent_avg:.2f} 元/天")
-                print(f"基于近4周趋势预估本月还需：{recent_avg * days_left:.2f} 元")
-    else:
+    if len(recharge_df) <= 1:
         print("充值记录不足，无法计算资金续航。")
+        print("\n")
+        return
+
+    recharge_df_copy = recharge_df.copy()
+    recharge_df_copy['充值前余额'] = recharge_df_copy[COL['balance']] - recharge_df_copy[COL['amount']]
+    avg_trigger_balance = recharge_df_copy['充值前余额'].mean()
+    print(f"财务习惯：平均在卡内余额剩余 {avg_trigger_balance:.2f} 元时触发充值。")
+
+    total_recharge_amt = recharge_df_copy[COL['amount']].sum()
+    if total_recharge_amt > 0:
+        days_per_100 = (100 / total_expense) * effective_days
+        print(f"充值续航：在校期间，平均每 100 元可支撑 {days_per_100:.1f} 天。")
+
+    daily_avg = total_expense / effective_days
+    today = datetime.now()
+    days_in_month = pd.Period(today.strftime('%Y-%m')).days_in_month
+    days_left = days_in_month - today.day
+    predicted = daily_avg * days_left
+    print(f"\n--- 【预算预测】 ---")
+    print(f"参考日均消费：{daily_avg:.2f} 元/天")
+    print(f"本月剩余天数：{days_left} 天")
+    print(f"预估本月还需：{predicted:.2f} 元")
+    if '年周' in expenses_df.columns:
+        recent_4w = expenses_df[expenses_df['年周'].isin(expenses_df['年周'].unique()[-4:])]
+        if not recent_4w.empty:
+            recent_days = recent_4w['日期'].nunique()
+            recent_avg = recent_4w[COL['amount']].sum() / max(recent_days, 1)
+            print(f"近4周日均消费：{recent_avg:.2f} 元/天")
+            print(f"基于近4周趋势预估本月还需：{recent_avg * days_left:.2f} 元")
     print("\n")
 
-    # ================= 6. 食堂三餐综合报表 =================
-    if not canteen_df.empty:
-        print("================ 【食堂三餐综合统计表】 ================")
-        pivot_avg = pd.pivot_table(canteen_df, values=COL['amount'], index='主食堂名称',
-                                   columns='餐段', aggfunc='mean').round(2)
-        pivot_count = pd.pivot_table(canteen_df, values=COL['amount'], index='主食堂名称',
-                                     columns='餐段', aggfunc='count', fill_value=0)
 
-        for meal in ['早餐', '午餐', '晚餐']:
-            if meal not in pivot_avg.columns:
-                pivot_avg[meal] = np.nan
-            if meal not in pivot_count.columns:
-                pivot_count[meal] = 0
-
-        total_count = canteen_df.groupby('主食堂名称').size()
-        total_avg = canteen_df.groupby('主食堂名称')[COL['amount']].mean().round(2)
-
-        canteen_summary = pd.DataFrame({
-            '早均(元)': pivot_avg['早餐'],
-            '早次数': pivot_count['早餐'].astype(int),
-            '中均(元)': pivot_avg['午餐'],
-            '中次数': pivot_count['午餐'].astype(int),
-            '晚均(元)': pivot_avg['晚餐'],
-            '晚次数': pivot_count['晚餐'].astype(int),
-            '总次数': total_count,
-            '总均(元)': total_avg
-        }).fillna('-')
-
-        print_aligned_table(canteen_summary)
-        print("\n")
-
-        print("================ 【三餐偏好与时间规律】 ================")
-        for meal in ['早餐', '午餐', '晚餐']:
-            meal_df = canteen_df[canteen_df['餐段'] == meal]
-            if not meal_df.empty:
-                fav_canteen = meal_df['主食堂名称'].value_counts().idxmax()
-                avg_logic_mins = meal_df['逻辑相对分钟数'].mean()
-                print(f"[{meal}] 最常去食堂: {fav_canteen:<6} | 平均就餐时间: {minutes_to_time_str(avg_logic_mins)}")
-        print("\n")
-
-        print("================ 【饮食轨迹专一度】 ================")
-        canteen_counts = canteen_df['主食堂名称'].value_counts(normalize=True)
-        top_canteen = canteen_counts.index[0]
-        top_ratio = canteen_counts.iloc[0]
-        print(f"饮食专一指数：{top_ratio:.1%} 的食堂消费发生在 [{top_canteen}]")
-        if top_ratio > 0.6:
-            print("数据判断：就餐轨迹高度集中，倾向于固定区域就餐。")
-        elif top_ratio < 0.3:
-            print("数据判断：就餐轨迹分散，倾向于在多个食堂间切换。")
-
-        # Canteen loyalty over time
-        print("\n--- 【食堂忠诚度月度变化】 ---")
-        monthly_canteen = canteen_df.groupby(['年月', '主食堂名称']).size().unstack(fill_value=0)
-        if len(monthly_canteen) >= 2:
-            monthly_share = monthly_canteen.div(monthly_canteen.sum(axis=1), axis=0)
-            top3 = canteen_df['主食堂名称'].value_counts().head(3).index.tolist()
-            top3 = [c for c in top3 if c in monthly_share.columns]
-            loyalty_table = monthly_share[top3].copy()
-            loyalty_table.index = [str(idx) for idx in loyalty_table.index]
-            loyalty_table = (loyalty_table * 100).round(1).astype(str)
-            loyalty_table = loyalty_table.apply(lambda col: col + '%')
-            print_aligned_table(loyalty_table)
-        print("\n")
-
-    else:
+def _section_canteen(expenses_df, canteen_df):
+    if canteen_df.empty:
         print("未识别到清晰的食堂消费数据。\n")
+        return
 
-    # ================= 7. 非食堂消费汇总 =================
+    print("================ 【食堂三餐综合统计表】 ================")
+    pivot_avg = pd.pivot_table(canteen_df, values=COL['amount'], index='主食堂名称',
+                               columns='餐段', aggfunc='mean').round(2)
+    pivot_count = pd.pivot_table(canteen_df, values=COL['amount'], index='主食堂名称',
+                                 columns='餐段', aggfunc='count', fill_value=0)
+
+    for meal in ['早餐', '午餐', '晚餐']:
+        if meal not in pivot_avg.columns:
+            pivot_avg[meal] = np.nan
+        if meal not in pivot_count.columns:
+            pivot_count[meal] = 0
+
+    total_count = canteen_df.groupby('主食堂名称').size()
+    total_avg = canteen_df.groupby('主食堂名称')[COL['amount']].mean().round(2)
+
+    canteen_summary = pd.DataFrame({
+        '早均(元)': pivot_avg['早餐'],
+        '早次数': pivot_count['早餐'].astype(int),
+        '中均(元)': pivot_avg['午餐'],
+        '中次数': pivot_count['午餐'].astype(int),
+        '晚均(元)': pivot_avg['晚餐'],
+        '晚次数': pivot_count['晚餐'].astype(int),
+        '总次数': total_count,
+        '总均(元)': total_avg
+    }).fillna('-')
+
+    print_aligned_table(canteen_summary)
+    print("\n")
+
+    print("================ 【三餐偏好与时间规律】 ================")
+    for meal in ['早餐', '午餐', '晚餐']:
+        meal_df = canteen_df[canteen_df['餐段'] == meal]
+        if not meal_df.empty:
+            fav_canteen = meal_df['主食堂名称'].value_counts().idxmax()
+            avg_logic_mins = meal_df['逻辑相对分钟数'].mean()
+            print(f"[{meal}] 最常去食堂: {fav_canteen:<6} | 平均就餐时间: {minutes_to_time_str(avg_logic_mins)}")
+    print("\n")
+
+    print("================ 【饮食轨迹专一度】 ================")
+    canteen_counts = canteen_df['主食堂名称'].value_counts(normalize=True)
+    top_canteen = canteen_counts.index[0]
+    top_ratio = canteen_counts.iloc[0]
+    print(f"饮食专一指数：{top_ratio:.1%} 的食堂消费发生在 [{top_canteen}]")
+    if top_ratio > 0.6:
+        print("数据判断：就餐轨迹高度集中，倾向于固定区域就餐。")
+    elif top_ratio < 0.3:
+        print("数据判断：就餐轨迹分散，倾向于在多个食堂间切换。")
+
+    # Canteen loyalty over time
+    print("\n--- 【食堂忠诚度月度变化】 ---")
+    monthly_canteen = canteen_df.groupby(['年月', '主食堂名称']).size().unstack(fill_value=0)
+    if len(monthly_canteen) >= 2:
+        monthly_share = monthly_canteen.div(monthly_canteen.sum(axis=1), axis=0)
+        top3 = canteen_df['主食堂名称'].value_counts().head(3).index.tolist()
+        top3 = [c for c in top3 if c in monthly_share.columns]
+        loyalty_table = monthly_share[top3].copy()
+        loyalty_table.index = [str(idx) for idx in loyalty_table.index]
+        loyalty_table = (loyalty_table * 100).round(1).astype(str)
+        loyalty_table = loyalty_table.apply(lambda col: col + '%')
+        print_aligned_table(loyalty_table)
+    print("\n")
+
+
+def _section_noncanteen(expenses_df):
     non_canteen_df = expenses_df[expenses_df['主食堂名称'].isna()]
     if not non_canteen_df.empty:
         print("================ 【非食堂消费明细汇总】 ================")
@@ -301,6 +287,61 @@ def run_analysis(file_path, gap_threshold=3.0, holiday_threshold=30.0):
     else:
         print("无非食堂消费记录。")
     print("\n")
+
+
+# ==================== Main Entry Point ====================
+
+def run_analysis(file_path, gap_threshold=3.0, holiday_threshold=30.0):
+    """Load data and produce a 7-section analysis report to stdout."""
+    print("正在加载数据并执行综合分析...\n")
+
+    df, expenses_df = load_and_prepare_expenses(file_path)
+
+    if expenses_df.empty:
+        print("未找到有效的消费记录。\n")
+        return
+
+    # --- Add computed columns to expenses_df ---
+    expenses_df['年周'] = expenses_df[COL['time']].dt.to_period('W-SUN')
+    expenses_df['逻辑相对分钟数'] = expenses_df[COL['time']].apply(get_logical_day_minutes)
+    expenses_df['主食堂名称'] = expenses_df[COL['merchant']].apply(extract_base_canteen)
+    expenses_df['餐段'] = expenses_df[COL['time']].apply(get_meal_period)
+
+    # --- Add gap column to full df for overview ---
+    df['距上笔交易_天'] = df[COL['time']].diff().dt.total_seconds() / 86400
+
+    # --- Pre-compute shared DataFrames / stats ---
+    gaps = df[df['距上笔交易_天'] > gap_threshold]
+    holiday_gaps = df[df['距上笔交易_天'] > holiday_threshold]
+    total_absolute_days = (df[COL['time']].max().date() - df[COL['time']].min().date()).days + 1
+    total_absence_days = gaps['距上笔交易_天'].sum() if not gaps.empty else 0
+    effective_days = max(total_absolute_days - total_absence_days, 1)
+
+    recharge_mask = df[COL['type']] == '充值'
+    recharge_df = df[recharge_mask]
+    total_expense = expenses_df[COL['amount']].sum()
+
+    # Daily stats — used by section 2 (weekday) and available for reuse
+    daily_stats = expenses_df.groupby('日期').agg(
+        单日总额=(COL['amount'], 'sum'),
+        单日笔数=(COL['amount'], 'count'),
+        星期数值=('星期数值', 'first')
+    ).reset_index()
+
+    # Canteen-only DataFrame — used by sections 4, 6, 7
+    canteen_df = expenses_df.dropna(subset=['主食堂名称'])
+
+    # --- Produce report ---
+    _section_overview(df, expenses_df, gaps, holiday_gaps,
+                      effective_days, total_expense, recharge_df,
+                      gap_threshold, holiday_threshold)
+    _section_trend(expenses_df)
+    _section_weekday(expenses_df, daily_stats)
+    _section_extremes(expenses_df, recharge_df)
+    _section_daily_rhythm(expenses_df, canteen_df)
+    _section_finance(expenses_df, recharge_df, effective_days, total_expense)
+    _section_canteen(expenses_df, canteen_df)
+    _section_noncanteen(expenses_df)
 
 
 if __name__ == "__main__":
